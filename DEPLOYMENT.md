@@ -116,3 +116,4 @@ To populate the initial admin, doctors, patients, and slots on your deployed dat
 python backend/manage.py seed_data
 ```
 Or run it locally with your live MongoDB Atlas connection string configured in `backend/.env`.
+

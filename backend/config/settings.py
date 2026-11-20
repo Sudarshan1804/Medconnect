@@ -59,7 +59,7 @@ TESTING = "test" in sys.argv
 # Application definition
 # ---------------------------------------------------------------------------
 
-if USE_MONGODB and MONGODB_URI:
+if USE_MONGODB:
     INSTALLED_APPS = [
         "config.apps.MongoAdminConfig",
         "config.apps.MongoAuthConfig",
@@ -67,6 +67,7 @@ if USE_MONGODB and MONGODB_URI:
         "django.contrib.sessions",
         "django.contrib.messages",
         "django.contrib.staticfiles",
+        "django_mongodb_backend",
         # Third-party
         "rest_framework",
         "rest_framework_simplejwt",
@@ -75,6 +76,7 @@ if USE_MONGODB and MONGODB_URI:
         # Local
         "core",
     ]
+    DATABASE_ROUTERS = ["django_mongodb_backend.routers.MongoRouter"]
 else:
     INSTALLED_APPS = [
         "django.contrib.admin",
@@ -210,8 +212,13 @@ STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
 
-if USE_MONGODB and MONGODB_URI:
+if USE_MONGODB:
     DEFAULT_AUTO_FIELD = "django_mongodb_backend.fields.ObjectIdAutoField"
+    MIGRATION_MODULES = {
+        "admin": "mongo_migrations.admin",
+        "auth": "mongo_migrations.auth",
+        "contenttypes": "mongo_migrations.contenttypes",
+    }
 else:
     DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
