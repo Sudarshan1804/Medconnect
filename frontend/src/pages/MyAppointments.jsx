@@ -1,0 +1,449 @@
+import { useState, useEffect } from 'react';
+import api from '../api/axios';
+import LoadingSpinner from '../components/LoadingSpinner';
+import StatusBadge from '../components/StatusBadge';
+import PaymentModal from '../components/PaymentModal';
+import ReceiptModal from '../components/ReceiptModal';
+import toast from 'react-hot-toast';
+import {
+  Calendar,
+  Clock,
+  XCircle,
+  RefreshCw,
+  Stethoscope,
+  X,
+  CreditCard,
+  FileText,
+  CheckCircle2,
+} from 'lucide-react';
+
+const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+export default function MyAppointments() {
+  const [appointments, setAppointments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState('upcoming');
+  const [rescheduleModal, setRescheduleModal] = useState(null);
+  const [rescheduleData, setRescheduleData] = useState({ slot: '', date: '', appointment_time: '' });
+  const [availableSlots, setAvailableSlots] = useState([]);
+  const [rescheduleTimeSlots, setRescheduleTimeSlots] = useState([]);
+  const [loadingTimes, setLoadingTimes] = useState(false);
+  const [actionLoading, setActionLoading] = useState(null);
+  const [paymentModalAppt, setPaymentModalAppt] = useState(null);
+  const [receiptModalData, setReceiptModalData] = useState(null);
+  const [paying, setPaying] = useState(false);
+
+  const fetchAppointments = async () => {
+    try {
+      const { data } = await api.get('/appointments/');
+      setAppointments(data.results || data);
+    } catch {
+      toast.error('Failed to load appointments');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAppointments();
+  }, []);
+
+  const today = new Date().toISOString().split('T')[0];
+  const upcoming = appointments.filter(
+    (a) => a.date >= today && !['CANCELLED', 'COMPLETED', 'EXPIRED'].includes(a.status)
+  );
+  const past = appointments.filter(
+    (a) => a.date < today || ['CANCELLED', 'COMPLETED', 'EXPIRED'].includes(a.status)
+  );
+  const displayed = tab === 'upcoming' ? upcoming : past;
+
+  const handleCancel = async (appt) => {
+    const isPaid = appt.payment_status === 'PAID';
+    const refundHalf = (parseFloat(appt.doctor_fee || appt.payment?.amount || 0) * 0.5).toFixed(0);
+    const confirmMsg = isPaid
+      ? `Are you sure you want to cancel this appointment?\n\nAs per hospital policy, a 50% refund (₹${refundHalf}) will be initiated by the hospital administration to your account.`
+      : 'Are you sure you want to cancel this appointment?';
+
+    if (!confirm(confirmMsg)) return;
+
+    setActionLoading(appt.id);
+    try {
+      await api.post(`/appointments/${appt.id}/cancel/`);
+      if (isPaid) {
+        toast.success(`Appointment cancelled. 50% refund (₹${refundHalf}) has been submitted to admin for processing.`);
+      } else {
+        toast.success('Appointment cancelled');
+      }
+      fetchAppointments();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to cancel');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleOpenReceipt = async (apptId) => {
+    try {
+      const { data } = await api.get(`/appointments/${apptId}/receipt/`);
+      setReceiptModalData(data);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Receipt not available yet.');
+    }
+  };
+
+  const handleConfirmOnlinePayment = async (paymentPayload) => {
+    if (!paymentModalAppt) return;
+    setPaying(true);
+    try {
+      await api.post(`/appointments/${paymentModalAppt.id}/pay/`, paymentPayload);
+      toast.success('Consultation fee paid successfully!');
+      setPaymentModalAppt(null);
+      fetchAppointments();
+      // Fetch and open receipt
+      try {
+        const { data: recData } = await api.get(`/appointments/${paymentModalAppt.id}/receipt/`);
+        setReceiptModalData(recData);
+      } catch {
+        // Receipt fetch optional
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Payment failed. Please try again.');
+    } finally {
+      setPaying(false);
+    }
+  };
+
+  const openReschedule = async (appt) => {
+    setRescheduleModal(appt);
+    setRescheduleData({ slot: '', date: '', appointment_time: '' });
+    setRescheduleTimeSlots([]);
+    try {
+      const doctorId = appt.slot?.doctor?.id;
+      if (doctorId) {
+        const { data } = await api.get(`/doctors/${doctorId}/slots/`);
+        setAvailableSlots(data.results || data);
+      }
+    } catch {
+      setAvailableSlots([]);
+    }
+  };
+
+  // Fetch available times when reschedule slot + date change
+  useEffect(() => {
+    if (!rescheduleData.slot || !rescheduleData.date) {
+      setRescheduleTimeSlots([]);
+      return;
+    }
+    const fetchTimes = async () => {
+      setLoadingTimes(true);
+      setRescheduleData((prev) => ({ ...prev, appointment_time: '' }));
+      try {
+        const { data } = await api.get('/appointments/available-times/', {
+          params: { slot: rescheduleData.slot, date: rescheduleData.date },
+        });
+        setRescheduleTimeSlots(data.times || []);
+      } catch {
+        setRescheduleTimeSlots([]);
+      } finally {
+        setLoadingTimes(false);
+      }
+    };
+    fetchTimes();
+  }, [rescheduleData.slot, rescheduleData.date]);
+
+  const handleReschedule = async () => {
+    if (!rescheduleData.slot || !rescheduleData.date || !rescheduleData.appointment_time) {
+      toast.error('Select a slot, date, and time');
+      return;
+    }
+    setActionLoading(rescheduleModal.id);
+    try {
+      await api.post(`/appointments/${rescheduleModal.id}/reschedule/`, {
+        slot: rescheduleData.slot,
+        date: rescheduleData.date,
+        appointment_time: rescheduleData.appointment_time,
+      });
+      toast.success('Appointment rescheduled');
+      setRescheduleModal(null);
+      fetchAppointments();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || Object.values(err.response?.data || {}).flat().join(' ') || 'Failed to reschedule');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  if (loading) return <LoadingSpinner size="lg" className="py-32" />;
+
+  return (
+    <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+      <div className="mb-8">
+        <span className="text-xs font-bold tracking-wider text-teal-600 uppercase bg-teal-50 px-3 py-1 rounded-full border border-teal-100">
+          Patient Portal
+        </span>
+        <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 mt-2">My Appointments</h1>
+        <p className="text-sm text-slate-500 mt-1">Track your scheduled 10-minute clinical consultations, doctor approvals, and official receipts</p>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex rounded-xl bg-slate-100 p-1 mb-8 max-w-xs border border-slate-200/60">
+        {['upcoming', 'past'].map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`flex-1 py-2 px-4 rounded-lg text-xs sm:text-sm font-semibold transition-all capitalize ${
+              tab === t
+                ? 'bg-teal-600 text-white shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            {t} ({t === 'upcoming' ? upcoming.length : past.length})
+          </button>
+        ))}
+      </div>
+
+      {/* Appointments list */}
+      {displayed.length === 0 ? (
+        <div className="text-center py-20">
+          <Calendar className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+          <p className="text-lg font-medium text-gray-500">
+            No {tab} appointments
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {displayed.map((appt) => {
+            const doctorName = appt.slot?.doctor?.full_name || '';
+            const specialty = appt.slot?.doctor?.specialty?.name || '';
+            return (
+              <div
+                key={appt.id}
+                className="card p-5 hover:shadow-md transition-shadow"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Stethoscope className="w-4 h-4 text-primary-500 shrink-0" />
+                      <p className="font-semibold text-gray-900">
+                        Dr. {doctorName}
+                      </p>
+                      <StatusBadge status={appt.status} />
+                      {appt.payment_status === 'PAID' ? (
+                        <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          <span>Fee Paid (₹{parseFloat(appt.doctor_fee || appt.payment?.amount || 0).toFixed(0)})</span>
+                        </span>
+                      ) : appt.payment_status === 'REFUND_PENDING' ? (
+                        <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-50 text-amber-800 border border-amber-300">
+                          <Clock className="w-3 h-3 text-amber-600" />
+                          <span>50% Refund Pending (₹{parseFloat(appt.refund_amount || appt.payment?.refund_amount || (appt.doctor_fee || 0) * 0.5).toFixed(0)})</span>
+                        </span>
+                      ) : appt.payment_status === 'REFUNDED' ? (
+                        <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-50 text-purple-800 border border-purple-300">
+                          <CheckCircle2 className="w-3 h-3 text-purple-600" />
+                          <span>50% Refunded (₹{parseFloat(appt.refund_amount || appt.payment?.refund_amount || (appt.doctor_fee || 0) * 0.5).toFixed(0)})</span>
+                        </span>
+                      ) : (
+                        appt.status !== 'CANCELLED' && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                            Fee Unpaid (₹{parseFloat(appt.doctor_fee || 0).toFixed(0)})
+                          </span>
+                        )
+                      )}
+                    </div>
+                    {specialty && (
+                      <p className="text-xs text-gray-400 mt-0.5 ml-6">{specialty}</p>
+                    )}
+                    <div className="flex items-center gap-3 mt-2 text-sm text-gray-500">
+                      <span className="flex items-center gap-1">
+                        <Calendar className="w-3.5 h-3.5" />
+                        {appt.date}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Clock className="w-3.5 h-3.5" />
+                        {appt.appointment_time?.slice(0, 5) || appt.slot?.start_time?.slice(0, 5)}
+                      </span>
+                    </div>
+                    {appt.reason && (
+                      <p className="text-xs text-gray-400 mt-2 line-clamp-1">
+                        Reason: {appt.reason}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    {/* Payment & Receipt Actions */}
+                    {['PAID', 'REFUND_PENDING', 'REFUNDED'].includes(appt.payment_status) ? (
+                      <button
+                        onClick={() => handleOpenReceipt(appt.id)}
+                        className="btn-secondary btn-sm text-xs flex items-center space-x-1 text-emerald-700 hover:text-emerald-800 hover:bg-emerald-50 border-emerald-200"
+                        title="View & Print Official Receipt"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Receipt</span>
+                      </button>
+                    ) : (
+                      appt.status !== 'CANCELLED' && (
+                        <button
+                          onClick={() => setPaymentModalAppt(appt)}
+                          className="btn-primary btn-sm text-xs flex items-center space-x-1 shadow-sm"
+                        >
+                          <CreditCard className="w-3.5 h-3.5" />
+                          <span>Pay Fee</span>
+                        </button>
+                      )
+                    )}
+
+                    {tab === 'upcoming' && (
+                      <>
+                        <button
+                          onClick={() => openReschedule(appt)}
+                          disabled={actionLoading === appt.id}
+                          className="btn-secondary btn-sm text-xs"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" />
+                          Reschedule
+                        </button>
+                        <button
+                          onClick={() => handleCancel(appt)}
+                          disabled={actionLoading === appt.id}
+                          className="btn-danger btn-sm text-xs"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          Cancel
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Reschedule Modal */}
+      {rescheduleModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 animate-scale-in">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-lg font-bold text-gray-900">Reschedule Appointment</h3>
+              <button onClick={() => setRescheduleModal(null)} className="p-1 hover:bg-gray-100 rounded-lg">
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="label">Select Slot</label>
+                <select
+                  value={rescheduleData.slot}
+                  onChange={(e) => setRescheduleData({ ...rescheduleData, slot: e.target.value, date: '', appointment_time: '' })}
+                  className="input"
+                >
+                  <option value="">Choose a slot</option>
+                  {availableSlots.filter(s => s.is_active).map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {DAYS[s.day_of_week]} · {s.start_time?.slice(0, 5)} – {s.end_time?.slice(0, 5)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="label">New Date</label>
+                <input
+                  type="date"
+                  min={new Date(Date.now() + 86400000).toISOString().split('T')[0]}
+                  value={rescheduleData.date}
+                  onChange={(e) => setRescheduleData({ ...rescheduleData, date: e.target.value, appointment_time: '' })}
+                  className="input"
+                />
+              </div>
+
+              {/* Time slots */}
+              {rescheduleData.slot && rescheduleData.date && (
+                <div>
+                  <label className="label">Select Time</label>
+                  {loadingTimes ? (
+                    <div className="flex items-center justify-center py-4">
+                      <div className="w-5 h-5 border-2 border-primary-300 border-t-primary-600 rounded-full animate-spin" />
+                    </div>
+                  ) : rescheduleTimeSlots.length === 0 ? (
+                    <p className="text-sm text-gray-400 text-center py-3">No times available</p>
+                  ) : (
+                    <div className="grid grid-cols-4 gap-2">
+                      {rescheduleTimeSlots.map((ts) => (
+                        <button
+                          key={ts.time}
+                          type="button"
+                          onClick={() => {
+                            if (ts.available) setRescheduleData({ ...rescheduleData, appointment_time: ts.time });
+                          }}
+                          disabled={!ts.available}
+                          className={`px-2 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+                            !ts.available
+                              ? 'bg-red-50 text-red-300 border-red-100 cursor-not-allowed line-through'
+                              : rescheduleData.appointment_time === ts.time
+                              ? 'bg-primary-600 text-white border-primary-600'
+                              : 'bg-white text-gray-700 border-gray-200 hover:border-primary-300'
+                          }`}
+                        >
+                          {ts.time}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setRescheduleModal(null)}
+                  className="btn-secondary flex-1"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleReschedule}
+                  disabled={actionLoading || !rescheduleData.appointment_time}
+                  className="btn-primary flex-1"
+                >
+                  {actionLoading ? (
+                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    'Reschedule'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Interactive Payment Gateway Modal */}
+      {paymentModalAppt && (
+        <PaymentModal
+          isOpen={!!paymentModalAppt}
+          onClose={() => setPaymentModalAppt(null)}
+          amount={paymentModalAppt.doctor_fee || paymentModalAppt.slot?.doctor?.fee || 100}
+          doctorName={`Dr. ${paymentModalAppt.slot?.doctor?.full_name || ''}`}
+          specialty={paymentModalAppt.slot?.doctor?.specialty?.name}
+          appointmentDate={paymentModalAppt.date}
+          appointmentTime={paymentModalAppt.appointment_time?.slice(0, 5) || paymentModalAppt.slot?.start_time?.slice(0, 5)}
+          onConfirmPayment={handleConfirmOnlinePayment}
+          loading={paying}
+        />
+      )}
+
+      {/* Official Printable Receipt Modal */}
+      {receiptModalData && (
+        <ReceiptModal
+          receipt={receiptModalData}
+          onClose={() => setReceiptModalData(null)}
+        />
+      )}
+    </div>
+  );
+}
