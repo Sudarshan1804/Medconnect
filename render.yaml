@@ -1,0 +1,18 @@
+services:
+  # Django Backend API Web Service
+  - type: web
+    name: medconnect-backend
+    runtime: python
+    buildCommand: pip install -r backend/requirements.txt && python backend/manage.py collectstatic --noinput && python backend/manage.py migrate
+    startCommand: gunicorn --chdir backend config.wsgi:application --bind 0.0.0.0:$PORT
+    envVars:
+      - key: USE_MONGODB
+        value: "True"
+      - key: MONGODB_URI
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DEBUG
+        value: "False"
+      - key: PYTHON_VERSION
+        value: 3.11.9
